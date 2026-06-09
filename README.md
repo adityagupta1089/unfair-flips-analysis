@@ -124,6 +124,23 @@ Four strategies were evaluated using dynamic programming over the full state spa
 
 The upgrade phase takes ~11 minutes; the final win phase takes ~15 minutes.
 
+### Upgrade decision spread
+
+At each step of the optimal path, the tool ranks all available upgrades by total expected time and shows the **spread** — the gap between the best and worst choice. A large spread means the decision is high-stakes; a small spread means it barely matters which you pick.
+
+Selected highlights from the time-optimal path:
+
+| Step | State | Spread | Key insight |
+|---|---|---|---|
+| 1–4 | p=20–25%, base=1¢ | 30–100s | First four upgrades are all ≤25¢ — interchangeable, barely matters |
+| 5 | p=25%, base=5¢, mult=1.5× | 33s | Worth ↑ clearly worst; H/M/T within 2s of each other |
+| 9 | p=30%, base=10¢, mult=2.0× | 1.5 min | Worth ↑ ($625) starts costing significantly more |
+| **13** | p=35%, base=25¢, mult=2.5× | **4.5 min** | **Highest-stakes step**: buying Worth ↑ ($10) costs 4.5 min vs buying Multiplier. Earning rate is still modest so the $10 cost is expensive relative to what you earn |
+| 17–19 | p=40–45%, base=$1, mult=3.5× | 3–12s | Upgrades left are so cheap relative to earning rate that order barely matters |
+| 20–21 | p=45–50%, base=$1, mult=3.5× | ~0s | Last two HeadsChance upgrades are the only option; no real decision |
+
+Step 13 is the single most consequential upgrade decision in the game. If you're playing intuitively and go for FlipBaseWorth ↑ (going from 25¢ to $1 base feels impactful) instead of FlipMultiplier, you pay 4.5 minutes. The earning rate at that point (~35¢/flip) makes the $10 cost slow to accumulate, while the multiplier upgrade is also $10 but immediately boosts earning for every future upgrade.
+
 ### Which metric to optimise?
 
 - **E[flips]** — best average over many playthroughs. Stops buying HeadsChance one level earlier (55% instead of 60%).
