@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "unfair-flips-analysis"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.scripts]
+analyze = "unfair_flips.analyze:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["unfair_flips"]
