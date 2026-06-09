@@ -22,7 +22,7 @@ from .game import (
     percentile_flips, head_earning,
 )
 from .optimizer import (
-    dp_optimal_path, best_next_upgrade,
+    dp_optimal_path, best_next_upgrade, compute_upgrade_spread,
     UPGRADE_NAMES, _evaluate_path,
 )
 
@@ -249,6 +249,52 @@ def print_path_breakdown(upgrades: list[str], start: GameState = GameState()) ->
     print(f"  Total: {fmt_flips(cumulative_flips)} flips  |  {fmt_time(cumulative_time)}")
 
 
+def print_upgrade_spread(upgrades: list[str], metric: str = "expected_time",
+                         include_time_upgrades: bool = True,
+                         start: GameState = GameState()) -> None:
+    """
+    For each step of the path show all available upgrades ranked by total
+    metric cost, with the spread between best and worst highlighted.
+    """
+    unit = "min" if metric == "expected_time" else "flips"
+    scale = 60.0 if metric == "expected_time" else 1.0
+
+    def fmt_cost(v: float) -> str:
+        if metric == "expected_time":
+            return fmt_time(v)
+        return fmt_flips(v)
+
+    print("\n" + "=" * 80)
+    print(f"UPGRADE DECISION SPREAD ({metric.replace('_', ' ')}-optimal path)")
+    print("=" * 80)
+    print(f"  How much does the choice of upgrade matter at each step?")
+    print(f"  Spread = (worst upgrade cost) − (best upgrade cost) in {unit}.")
+    print(f"  A large spread means a high-stakes decision; small = roughly equivalent.\n")
+
+    steps = compute_upgrade_spread(upgrades, metric=metric,
+                                   include_time_upgrades=include_time_upgrades, start=start)
+
+    name_w = 22
+    state_w = 36
+    header = (f"  {'Step':>4}  {'State (before)':<{state_w}}  "
+              f"{'#':>2}  {'Upgrade':<{name_w}}  {'Total':>9}  {'vs best':>9}  {'Spread':>9}")
+    sep = "  " + "-" * (len(header) - 2)
+    print(header)
+    print(sep)
+
+    for step in steps:
+        for rank, opt in enumerate(step.options, 1):
+            marker = " ★" if opt.chosen else ""
+            state_str = step.state.label() if rank == 1 else ""
+            spread_str = fmt_cost(step.spread) if rank == 1 else ""
+            delta_str = "—" if opt.delta_vs_best == 0.0 else f"+{fmt_cost(opt.delta_vs_best)}"
+            print(f"  {step.step if rank == 1 else '':>4}  {state_str:<{state_w}}  "
+                  f"{rank:>2}  {opt.name:<{name_w}}  "
+                  f"{fmt_cost(opt.total_cost):>9}  {delta_str:>9}  "
+                  f"{spread_str:>9}{marker}")
+        print()
+
+
 def print_next_upgrade(state: GameState) -> None:
     print("\n" + "=" * 80)
     print(f"BEST NEXT UPGRADE for: {state.label()}")
@@ -318,6 +364,7 @@ def main() -> None:
     # Show breakdown for the time-optimal path
     best_time = dp_optimal_path(metric="expected_time", include_time_upgrades=True)
     print_path_breakdown(best_time.upgrades)
+    print_upgrade_spread(best_time.upgrades)
 
     print_next_upgrade(state)
 

@@ -76,6 +76,19 @@ class PathResult:
 # Core DP: find the optimal path minimizing a given cost metric
 # ---------------------------------------------------------------------------
 
+def _result_metric(result: "PathResult", metric: str) -> float:
+    """Extract the scalar cost value from a PathResult for the given metric."""
+    if metric == "expected_time":
+        return result.total_expected_time
+    if metric in ("expected_flips", "p50"):
+        return result.total_expected_flips
+    if metric == "p95":
+        return result.p95_flips
+    if metric == "p99":
+        return result.p99_flips
+    raise ValueError(f"Unknown metric: {metric}")
+
+
 def _cost_metric(state: GameState, metric: str) -> float:
     """Terminal cost of winning from `state` under the chosen metric."""
     p = state.heads_prob
@@ -214,6 +227,107 @@ def _evaluate_path(upgrades: list[str], start: GameState = GameState()) -> PathR
         p95_flips=total_flips - win_flips + percentile_flips(p, 0.95),
         p99_flips=total_flips - win_flips + percentile_flips(p, 0.99),
     )
+
+
+# ---------------------------------------------------------------------------
+# Upgrade decision spread: at each step, how much do choices differ?
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpreadOption:
+    code: str
+    name: str
+    total_cost: float
+    delta_vs_best: float
+    chosen: bool
+
+
+@dataclass
+class UpgradeSpreadStep:
+    step: int
+    state: GameState
+    options: list[SpreadOption]
+    best_cost: float
+    spread: float         # max(upgrade costs) - min(upgrade costs), excl. WIN
+
+
+def compute_upgrade_spread(
+    upgrades: list[str],
+    metric: str = "expected_time",
+    include_time_upgrades: bool = True,
+    start: GameState = GameState(),
+) -> list[UpgradeSpreadStep]:
+    """
+    For each step along `upgrades`, compute the total metric cost of
+    every available upgrade (and "win now") at that state.
+
+    total cost of choosing upgrade U at state S =
+        transition_cost(S → buy(U)) + dp_optimal(start=buy(U))
+
+    This shows which steps have high leverage (large spread between options)
+    vs. steps where any choice is roughly equivalent.
+    """
+    steps = []
+    state = start
+
+    for step_num, chosen_code in enumerate(upgrades, 1):
+        candidates: list[tuple[str, GameState, int]] = []
+        if state.heads_level < HEADS_MAX_LEVEL:
+            candidates.append(("H", state.buy_heads(), HEADS_COSTS[state.heads_level]))
+        if state.worth_level < WORTH_MAX_LEVEL:
+            candidates.append(("W", state.buy_worth(), WORTH_COSTS[state.worth_level]))
+        if state.mult_level < MULT_MAX_LEVEL:
+            candidates.append(("M", state.buy_mult(), MULT_COSTS[state.mult_level]))
+        if include_time_upgrades and state.time_level < FLIPTIME_MAX_LEVEL:
+            candidates.append(("T", state.buy_time(), FLIPTIME_COSTS[state.time_level]))
+
+        raw_options: list[SpreadOption] = []
+
+        # "Win now" baseline
+        win_cost = _cost_metric(state, metric)
+        raw_options.append(SpreadOption(code="WIN", name="Win now", total_cost=win_cost, delta_vs_best=0.0, chosen=False))
+
+        # Each purchasable upgrade
+        for code, next_state, cost in candidates:
+            tc = _transition_cost(state, next_state, cost, metric)
+            future = dp_optimal_path(metric=metric, include_time_upgrades=include_time_upgrades, start=next_state)
+            total = tc + _result_metric(future, metric)
+            raw_options.append(SpreadOption(
+                code=code,
+                name=UPGRADE_NAMES[code],
+                total_cost=total,
+                delta_vs_best=0.0,
+                chosen=code == chosen_code,
+            ))
+
+        raw_options.sort(key=lambda o: o.total_cost)
+        best_cost = raw_options[0].total_cost
+        for o in raw_options:
+            o.delta_vs_best = o.total_cost - best_cost
+
+        # Spread is over purchasable upgrades only (exclude WIN)
+        upgrade_costs = [o.total_cost for o in raw_options if o.code != "WIN"]
+        spread = max(upgrade_costs) - min(upgrade_costs)
+        options = raw_options
+
+        steps.append(UpgradeSpreadStep(
+            step=step_num,
+            state=state,
+            options=options,
+            best_cost=best_cost,
+            spread=spread,
+        ))
+
+        if chosen_code == "H":
+            state = state.buy_heads()
+        elif chosen_code == "W":
+            state = state.buy_worth()
+        elif chosen_code == "M":
+            state = state.buy_mult()
+        elif chosen_code == "T":
+            state = state.buy_time()
+
+    return steps
 
 
 # ---------------------------------------------------------------------------
