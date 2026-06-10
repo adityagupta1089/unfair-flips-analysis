@@ -23,7 +23,7 @@ from .game import (
 )
 from .optimizer import (
     dp_optimal_path, best_next_upgrade, compute_upgrade_spread,
-    UPGRADE_NAMES, _evaluate_path,
+    greedy_kth_worst_path, UPGRADE_NAMES, _evaluate_path,
 )
 
 
@@ -295,6 +295,127 @@ def print_upgrade_spread(upgrades: list[str], metric: str = "expected_time",
         print()
 
 
+def print_worst_vs_optimal(start: GameState = GameState()) -> None:
+    """Compare worst, 2nd-worst, and optimal upgrade orders for expected wall time."""
+    print("\n" + "=" * 80)
+    print("WORST-CASE vs OPTIMAL UPGRADE ORDER (expected wall time)")
+    print("=" * 80)
+    print("  'Worst'    = always picks the single worst available upgrade.")
+    print("  '2nd-worst'= always avoids the single worst, but picks 2nd-worst.")
+    print("  'Optimal'  = DP-minimised expected time.\n")
+
+    optimal    = dp_optimal_path(metric="expected_time", include_time_upgrades=True, start=start)
+    worst      = dp_optimal_path(metric="expected_time", include_time_upgrades=True, start=start, maximize=True)
+    second_worst = greedy_kth_worst_path(k=2, metric="expected_time",
+                                          include_time_upgrades=True, start=start)
+
+    opt_t = optimal.total_expected_time
+    rows = [
+        ("Optimal",    optimal,      opt_t),
+        ("2nd-worst",  second_worst, second_worst.total_expected_time),
+        ("Worst",      worst,        worst.total_expected_time),
+    ]
+
+    print(f"  {'Strategy':<12}  {'E[time]':>10}  {'×optimal':>10}  Path")
+    print("  " + "-" * 100)
+    for label, result, t in rows:
+        ratio = t / opt_t if opt_t > 0 else float("inf")
+        seq = " → ".join(result.upgrades[:12])
+        if len(result.upgrades) > 12:
+            seq += " → …"
+        print(f"  {label:<12}  {fmt_time(t):>10}  {ratio:>10.1f}×  {seq}")
+
+    wst_t = worst.total_expected_time
+    sw_t  = second_worst.total_expected_time
+    print(f"\n  Key insight: just avoiding the single worst choice each step reduces")
+    print(f"  expected time from {fmt_time(wst_t)} to {fmt_time(sw_t)} ({wst_t/sw_t:.0f}× improvement).")
+    print(f"  But still {sw_t/opt_t:.1f}× slower than the optimal path.")
+
+
+def print_wait_percentiles(upgrades: list[str], start: GameState = GameState()) -> None:
+    """For each upgrade step, show E[wait], P50, P95, P99 wait times."""
+    from .game import flips_to_earn, expected_earning_per_attempt, expected_flips_per_attempt
+    import math
+
+    def _var_earning_per_attempt(p, base_worth, combo_mult, n=10):
+        """Var[earnings in one attempt] via E[X²] - E[X]²."""
+        mean = expected_earning_per_attempt(p, base_worth, combo_mult, n)
+        ex2 = 0.0
+        for k in range(n):
+            prob = (p ** k) * (1 - p)
+            s = sum(head_earning(j, base_worth, combo_mult) for j in range(1, k + 1))
+            ex2 += prob * s * s
+        s_win = sum(head_earning(j, base_worth, combo_mult) for j in range(1, n + 1))
+        ex2 += (p ** n) * s_win * s_win
+        return ex2 - mean * mean
+
+    def _wait_percentile(cost_cents, p, base_worth, combo_mult, pct):
+        """Approximate pct-th percentile of flips to earn cost_cents cents."""
+        e_attempt = expected_earning_per_attempt(p, base_worth, combo_mult)
+        f_attempt = expected_flips_per_attempt(p)
+        if e_attempt <= 0:
+            return math.inf
+        # Expected number of attempts
+        e_n = cost_cents / e_attempt
+        if e_n <= 0:
+            return 0.0
+        # Variance of attempts (by CLT for random sums)
+        var_earn = _var_earning_per_attempt(p, base_worth, combo_mult)
+        # Var[N_attempts] ≈ e_n * var_earn / e_attempt²  (delta method for stopping time)
+        var_n = e_n * var_earn / (e_attempt ** 2)
+        std_n = math.sqrt(max(var_n, 0))
+        # Normal quantile
+        from statistics import NormalDist
+        z = NormalDist().inv_cdf(pct)
+        n_pct = max(0.0, e_n + z * std_n)
+        return n_pct * f_attempt
+
+    print("\n" + "=" * 80)
+    print("WAIT TIME DISTRIBUTION PER UPGRADE STEP (E / P50 / P95 / P99)")
+    print("=" * 80)
+
+    state = start
+    from .constants import HEADS_COSTS, WORTH_COSTS, MULT_COSTS, FLIPTIME_COSTS
+
+    header = (f"  {'Step':>4}  {'Upgrade':28}  {'Cost':>8}  "
+              f"{'E[wait]':>9}  {'P50':>9}  {'P95':>9}  {'P99':>9}")
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    for step_num, code in enumerate(upgrades, 1):
+        if code == "H":
+            cost = HEADS_COSTS[state.heads_level]; next_state = state.buy_heads()
+        elif code == "W":
+            cost = WORTH_COSTS[state.worth_level]; next_state = state.buy_worth()
+        elif code == "M":
+            cost = MULT_COSTS[state.mult_level]; next_state = state.buy_mult()
+        elif code == "T":
+            cost = FLIPTIME_COSTS[state.time_level]; next_state = state.buy_time()
+        else:
+            continue
+
+        p, b, m, d = state.heads_prob, state.base_worth, state.combo_mult, state.flip_duration
+        e_flips = flips_to_earn(cost, expected_earning_per_flip(p, b, m))
+        p50 = _wait_percentile(cost, p, b, m, 0.50)
+        p95 = _wait_percentile(cost, p, b, m, 0.95)
+        p99 = _wait_percentile(cost, p, b, m, 0.99)
+
+        print(f"  {step_num:>4}  {UPGRADE_NAMES[code]:<28}  {fmt_cents(cost):>8}  "
+              f"{fmt_time(e_flips*d):>9}  {fmt_time(p50*d):>9}  "
+              f"{fmt_time(p95*d):>9}  {fmt_time(p99*d):>9}")
+        state = next_state
+
+    # Win phase
+    p, d = state.heads_prob, state.flip_duration
+    e_win = expected_flips_to_win(p)
+    p50_win = percentile_flips(p, 0.50)
+    p95_win = percentile_flips(p, 0.95)
+    p99_win = percentile_flips(p, 0.99)
+    print(f"  {'→':>4}  {'WIN':28}  {'':>8}  "
+          f"{fmt_time(e_win*d):>9}  {fmt_time(p50_win*d):>9}  "
+          f"{fmt_time(p95_win*d):>9}  {fmt_time(p99_win*d):>9}")
+
+
 def print_next_upgrade(state: GameState) -> None:
     print("\n" + "=" * 80)
     print(f"BEST NEXT UPGRADE for: {state.label()}")
@@ -364,7 +485,9 @@ def main() -> None:
     # Show breakdown for the time-optimal path
     best_time = dp_optimal_path(metric="expected_time", include_time_upgrades=True)
     print_path_breakdown(best_time.upgrades)
+    print_wait_percentiles(best_time.upgrades)
     print_upgrade_spread(best_time.upgrades)
+    print_worst_vs_optimal()
 
     print_next_upgrade(state)
 

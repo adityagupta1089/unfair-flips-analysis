@@ -131,22 +131,20 @@ def dp_optimal_path(
     metric: str = "expected_flips",
     include_time_upgrades: bool = False,
     start: GameState = GameState(),
+    maximize: bool = False,
 ) -> PathResult:
     """
-    Find the upgrade path minimising the total cost under `metric`.
+    Find the upgrade path minimising (or maximising) the total cost under `metric`.
 
     Uses memoised DFS over (heads_level, worth_level, mult_level[, time_level]).
+    Set maximize=True to find the worst possible upgrade ordering.
     """
 
     @lru_cache(maxsize=None)
     def dp(h: int, w: int, m: int, t: int) -> tuple[float, list[str]]:
-        """Returns (min_total_cost, upgrade_sequence) from this state."""
         state = GameState(h, w, m, t)
-        # Option: stop upgrading and go for the win now
         best_cost = _cost_metric(state, metric)
         best_seq: list[str] = []
-
-        epf = expected_earning_per_flip(state.heads_prob, state.base_worth, state.combo_mult)
 
         def try_upgrade(code: str, next_state: GameState, upgrade_cost: int) -> None:
             nonlocal best_cost, best_seq
@@ -158,7 +156,8 @@ def dp_optimal_path(
                 next_state.time_level,
             )
             total = tc + future_cost
-            if total < best_cost:
+            is_better = total > best_cost if maximize else total < best_cost
+            if is_better:
                 best_cost = total
                 best_seq = [code] + future_seq
 
@@ -175,8 +174,6 @@ def dp_optimal_path(
 
     dp.cache_clear()
     _, seq = dp(start.heads_level, start.worth_level, start.mult_level, start.time_level)
-
-    # Replay the path to compute full stats
     return _evaluate_path(seq, start)
 
 
@@ -249,6 +246,55 @@ class UpgradeSpreadStep:
     options: list[SpreadOption]
     best_cost: float
     spread: float         # max(upgrade costs) - min(upgrade costs), excl. WIN
+
+
+def greedy_kth_worst_path(
+    k: int = 2,
+    metric: str = "expected_time",
+    include_time_upgrades: bool = True,
+    start: GameState = GameState(),
+) -> PathResult:
+    """
+    Simulate a player who, at each step, picks the k-th worst available upgrade
+    (ranked by transition_cost + dp_optimal from the resulting state).
+
+    k=1 → always picks the absolute worst option (same result as dp maximize greedy).
+    k=2 → picks the 2nd worst (avoids the single worst mistake each step).
+
+    This is greedy (not DP), so it can be suboptimal in unexpected ways.
+    """
+    state = start
+    seq: list[str] = []
+
+    while True:
+        candidates: list[tuple[str, GameState, int]] = []
+        if state.heads_level < HEADS_MAX_LEVEL:
+            candidates.append(("H", state.buy_heads(), HEADS_COSTS[state.heads_level]))
+        if state.worth_level < WORTH_MAX_LEVEL:
+            candidates.append(("W", state.buy_worth(), WORTH_COSTS[state.worth_level]))
+        if state.mult_level < MULT_MAX_LEVEL:
+            candidates.append(("M", state.buy_mult(), MULT_COSTS[state.mult_level]))
+        if include_time_upgrades and state.time_level < FLIPTIME_MAX_LEVEL:
+            candidates.append(("T", state.buy_time(), FLIPTIME_COSTS[state.time_level]))
+
+        if not candidates:
+            break
+
+        scored: list[tuple[float, str, GameState]] = []
+        for code, next_state, cost in candidates:
+            tc = _transition_cost(state, next_state, cost, metric)
+            future = dp_optimal_path(metric=metric, include_time_upgrades=include_time_upgrades,
+                                     start=next_state)
+            scored.append((tc + _result_metric(future, metric), code, next_state))
+
+        scored.sort(key=lambda x: x[0], reverse=True)  # descending = worst first
+        pick_idx = min(k - 1, len(scored) - 1)
+        _, chosen_code, next_state = scored[pick_idx]
+
+        seq.append(chosen_code)
+        state = next_state
+
+    return _evaluate_path(seq, start)
 
 
 def compute_upgrade_spread(
